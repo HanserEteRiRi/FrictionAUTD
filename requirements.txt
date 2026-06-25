@@ -1,0 +1,5 @@
+numpy
+librosa
+matplotlib
+sounddevice
+pyautd3>=33,<39

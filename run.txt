@@ -1,0 +1,16 @@
+# Start AUTD Server/TwinCAT first, then:
+cd FrictionAUTD
+python friction_play.py
+
+# Simulate without AUTD hardware:
+# python friction_play.py --mode simulate
+
+# List audio output devices:
+# python friction_play.py --list-audio-devices
+
+# Analyze a rubbing/friction WAV into motion parameters:
+# python friction_analyze.py --wav path/to/friction.wav --plot
+
+# Optional examples:
+# python friction_back_and_forth.py --cycle-hz 0.5 --length-mm 50
+# python friction_back_and_forth.py --base-z-mm 250 --height-mm 100

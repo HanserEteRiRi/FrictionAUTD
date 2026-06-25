@@ -1,0 +1,18 @@
+{
+  "source_path": "/Users/mikieteriri/proj/AUTDtest/FrictionAUTD/audio_files/asmr_friction_01h22m01s_01h22m20s.wav",
+  "clip_path": "/Users/mikieteriri/proj/AUTDtest/FrictionAUTD/audio_files/asmr_friction_01h22m01s_01h22m20s_slow_0p5x.wav",
+  "method": "librosa.effects.time_stretch",
+  "speed_rate": 0.5,
+  "pitch_preserved": true,
+  "sample_rate": 44100,
+  "channels": 2,
+  "source_frames": 837900,
+  "output_frames": 1675800,
+  "source_duration_s": 19.0,
+  "output_duration_s": 38.0,
+  "source_peak": 0.396087646484375,
+  "output_peak_before_normalization": 0.33035609126091003,
+  "normalization_gain": 1.0,
+  "subtype": "PCM_16",
+  "note": "0.5x speed, pitch-preserving stretch. Peak is limited only if needed to avoid clipping."
+}
