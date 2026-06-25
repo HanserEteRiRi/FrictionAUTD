@@ -32,6 +32,13 @@ update_hz = 4.0
 # English: Pre-open audio output, then start audio immediately after the first haptic send.
 sync_audio = true
 
+[realsense]
+# English: Real mode starts the same right/left RealSense arm trackers as UltraSleep.
+enabled = true
+
+# English: 0 waits forever, like UltraSleep. Set a positive value to fail fast.
+startup_timeout_s = 0.0
+
 [autd]
 # 中文：设备连接、18 台几何和左右 9+9 分组完全使用 UltraSleep/config.py
 #       与 UltraSleep/autd_manager.py 的 TwinCAT 配置。

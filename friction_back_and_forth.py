@@ -15,7 +15,7 @@ import numpy as np
 
 import config
 from autd_manager import AUTDManager
-from pyautd3 import Focus, FocusOption, GainSTM, GainSTMMode, GainSTMOption, SamplingConfig, Static
+from pyautd3 import Focus, FocusOption, GainSTM, GainSTMMode, GainSTMOption, Hz, Static
 try:
     from pyautd3 import EmitIntensity
 except ImportError:  # EmitIntensity was renamed to Intensity in pyautd3 >= 35.
@@ -90,16 +90,15 @@ def main() -> None:
     path_left = eased_back_and_forth_points(center_left, args.length_mm, args.frames)
     cycle_hz = compatible_cycle_hz(len(path_right), args.cycle_hz)
     sampling_hz = int(round(len(path_right) * cycle_hz))
-    sampling = SamplingConfig(ULTRASOUND_FREQ_HZ // sampling_hz)
     option = GainSTMOption(mode=GainSTMMode.PhaseIntensityFull)
     gain_right = GainSTM(
         gains=[focus(point, args.intensity) for point in path_right],
-        config=sampling,
+        config=cycle_hz * Hz,
         option=option,
     )
     gain_left = GainSTM(
         gains=[focus(point, args.intensity) for point in path_left],
-        config=sampling,
+        config=cycle_hz * Hz,
         option=option,
     )
 

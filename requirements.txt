@@ -2,4 +2,7 @@ numpy
 librosa
 matplotlib
 sounddevice
-pyautd3>=33,<39
+opencv-python==4.11.0.86
+mediapipe>=0.10.14
+pyrealsense2>=2.55.1.6486
+pyautd3==33.0.0

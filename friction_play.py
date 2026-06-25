@@ -93,6 +93,8 @@ class Settings:
     right_center_y_mm: float
     left_center_x_mm: float
     left_center_y_mm: float
+    realsense_enabled: bool
+    realsense_startup_timeout_s: float
     audio_backend: str
     audio_device: int | str | None
     audio_volume: float
@@ -339,6 +341,112 @@ class AfplayAudioPlayer:
         self.finished.set()
 
 
+class RealSenseTrackerPair:
+    """Run the same right/left RealSense trackers as UltraSleep."""
+
+    def __init__(self, startup_timeout_s: float) -> None:
+        self.startup_timeout_s = max(0.0, float(startup_timeout_s))
+        self.right = None
+        self.left = None
+        self.threads: list[threading.Thread] = []
+        self.errors: list[str] = []
+        self.lock = threading.Lock()
+        self.is_closing = False
+
+    def __enter__(self) -> "RealSenseTrackerPair":
+        import config
+        from realsense_for_sleep import RealSenseForSleep
+
+        try:
+            self.right = RealSenseForSleep(
+                window_config=config.REALSENSE_PLOT_CONFIG,
+                n_stm=config.N_STM,
+                realsense_serial_number=config.REALSENSE_SERIAL_NUMBER_RIGHT,
+            )
+            self.left = RealSenseForSleep(
+                window_config=config.REALSENSE_PLOT_CONFIG,
+                n_stm=config.N_STM,
+                realsense_serial_number=config.REALSENSE_SERIAL_NUMBER_LEFT,
+            )
+            self.threads = [
+                threading.Thread(target=self._run_tracker, args=("right", self.right), daemon=True),
+                threading.Thread(target=self._run_tracker, args=("left", self.left), daemon=True),
+            ]
+            for thread in self.threads:
+                thread.start()
+            self._wait_until_ready()
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+        self.close()
+
+    def _run_tracker(self, name: str, tracker: Any) -> None:
+        try:
+            tracker.run()
+        except Exception as exc:  # noqa: BLE001 - camera/OpenCV backends raise mixed exceptions.
+            if self.is_closing:
+                return
+            with self.lock:
+                self.errors.append(f"{name}: {exc}")
+            print(f"\nRealSense {name} tracker stopped: {exc}")
+
+    def _wait_until_ready(self) -> None:
+        print("Starting RealSense trackers: right and left.")
+        start = time.perf_counter()
+        last_notice_s = -1.0
+        while True:
+            self._raise_errors()
+            if self.is_closing:
+                raise RuntimeError("RealSense startup was cancelled.")
+            if self.right is not None and self.left is not None and self.right.is_enabled and self.left.is_enabled:
+                print("RealSense connected: right and left frame streams are active.")
+                return
+
+            elapsed_s = time.perf_counter() - start
+            if elapsed_s - last_notice_s >= 1.0:
+                print("Waiting for RealSense frames...")
+                last_notice_s = elapsed_s
+            if self.startup_timeout_s > 0 and elapsed_s >= self.startup_timeout_s:
+                raise RuntimeError(
+                    "Timed out waiting for RealSense frames. "
+                    "Check both camera serial numbers and USB connections."
+                )
+            time.sleep(0.05)
+
+    def _raise_errors(self) -> None:
+        with self.lock:
+            if self.errors:
+                raise RuntimeError("RealSense tracker failed: " + "; ".join(self.errors))
+
+    def get_paths(self) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        self._raise_errors()
+        return self._copy_positions(self.right), self._copy_positions(self.left)
+
+    @staticmethod
+    def _copy_positions(tracker: Any) -> list[np.ndarray]:
+        if tracker is None:
+            return []
+        return [np.asarray(pos, dtype=np.float64) for pos in tracker.get_stm_positions()]
+
+    def close(self) -> None:
+        self.is_closing = True
+        for tracker in (self.right, self.left):
+            if tracker is None:
+                continue
+            try:
+                tracker.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"RealSense stop warning: {exc}")
+
+        for thread in self.threads:
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+        self.threads = []
+
+
 class SimulatedFrictionAUTD:
     """Terminal-only playback target.
 
@@ -380,15 +488,24 @@ class RealFrictionAUTD:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.autd = None
+        self.realsense: RealSenseTrackerPair | None = None
         self.last_frame: MotionFrame | None = None
         self.last_timing: StmTiming | None = None
+        self.realsense_fallback_warned = False
 
     def __enter__(self) -> "RealFrictionAUTD":
         import config
         from autd_manager import AUTDManager
 
-        self.autd = AUTDManager(link=config.LINK)
-        return self
+        try:
+            self.autd = AUTDManager(link=config.LINK)
+            if self.settings.realsense_enabled:
+                self.realsense = RealSenseTrackerPair(self.settings.realsense_startup_timeout_s)
+                self.realsense.__enter__()
+            return self
+        except BaseException:
+            self.close()
+            raise
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         self.close()
@@ -410,6 +527,9 @@ class RealFrictionAUTD:
         return ok
 
     def close(self) -> None:
+        if self.realsense is not None:
+            self.realsense.close()
+            self.realsense = None
         if self.autd is None:
             return
         try:
@@ -421,7 +541,7 @@ class RealFrictionAUTD:
 
     def _make_gain_stms(self, frame: MotionFrame, timing: StmTiming, audio_time_s: float) -> tuple[Any, Any]:
         import config
-        from pyautd3 import Focus, FocusOption, GainSTM, GainSTMMode, GainSTMOption, SamplingConfig
+        from pyautd3 import Focus, FocusOption, GainSTM, GainSTMMode, GainSTMOption, Hz
         try:
             from pyautd3 import EmitIntensity
         except ImportError:  # EmitIntensity was renamed to Intensity in pyautd3 >= 35.
@@ -434,6 +554,7 @@ class RealFrictionAUTD:
         half_length = max(1.0, frame.length_mm) / 2.0
         jitter = max(0.0, frame.jitter_mm)
         phase0 = 2.0 * math.pi * timing.cycle_hz * max(0.0, audio_time_s)
+        detected_paths = self._current_realsense_paths(config)
 
         gains_right = []
         gains_left = []
@@ -447,38 +568,61 @@ class RealFrictionAUTD:
             # 中文：jitter 用平滑正弦扰动表示粗糙摩擦，不使用逐帧随机跳变。
             # English: Smooth sinusoidal jitter represents roughness without random frame jumps.
             y = jitter * (0.65 * math.sin(3.0 * theta) + 0.35 * math.sin(7.0 * theta + 0.7))
-            point_right = (
-                np.array(
-                    [
-                        self.settings.right_center_x_mm + x,
-                        self.settings.right_center_y_mm + y,
-                        z,
-                    ],
-                    dtype=np.float64,
+            if detected_paths is None:
+                point_right = (
+                    np.array(
+                        [
+                            self.settings.right_center_x_mm + x,
+                            self.settings.right_center_y_mm + y,
+                            z,
+                        ],
+                        dtype=np.float64,
+                    )
+                    + config.DEVICE_CENTER_RIGHT
                 )
-                + config.DEVICE_CENTER_RIGHT
-            )
-            point_left = (
-                np.array(
-                    [
-                        self.settings.left_center_x_mm + x,
-                        self.settings.left_center_y_mm + y,
-                        z,
-                    ],
-                    dtype=np.float64,
+                point_left = (
+                    np.array(
+                        [
+                            self.settings.left_center_x_mm + x,
+                            self.settings.left_center_y_mm + y,
+                            z,
+                        ],
+                        dtype=np.float64,
+                    )
+                    + config.DEVICE_CENTER_LEFT
                 )
-                + config.DEVICE_CENTER_LEFT
-            )
+            else:
+                path_right, path_left = detected_paths
+                point_right = friction_point_on_polyline(path_right, theta, frame.length_mm, jitter)
+                point_left = friction_point_on_polyline(path_left, theta, frame.length_mm, jitter)
             option = FocusOption(intensity=EmitIntensity(intensity))
             gains_right.append(Focus(point_right, option=option))
             gains_left.append(Focus(point_left, option=option))
 
         stm_option = GainSTMOption(mode=GainSTMMode.PhaseIntensityFull)
-        sampling = SamplingConfig(timing.divide)
         return (
-            GainSTM(gains=gains_right, config=sampling, option=stm_option),
-            GainSTM(gains=gains_left, config=sampling, option=stm_option),
+            GainSTM(gains=gains_right, config=timing.cycle_hz * Hz, option=stm_option),
+            GainSTM(gains=gains_left, config=timing.cycle_hz * Hz, option=stm_option),
         )
+
+    def _current_realsense_paths(self, config_module: Any) -> tuple[np.ndarray, np.ndarray] | None:
+        if self.realsense is None:
+            return None
+
+        right_positions, left_positions = self.realsense.get_paths()
+        right_path = valid_realsense_path(right_positions)
+        left_path = valid_realsense_path(left_positions)
+        if right_path is None or left_path is None:
+            if not self.realsense_fallback_warned:
+                print("\nRealSense is running, but no valid arm path is available yet. Using fixed fallback centers.")
+                self.realsense_fallback_warned = True
+            return None
+
+        right_path = right_path + config_module.DEVICE_CENTER_RIGHT
+        left_path = left_path + config_module.DEVICE_CENTER_LEFT
+        right_path[:, 2] -= config_module.Z_OFFSET
+        left_path[:, 2] -= config_module.Z_OFFSET
+        return right_path, left_path
 
     def _send_gains(self, gain_right: Any, gain_left: Any, *, label: str) -> bool:
         from pyautd3 import Static
@@ -494,6 +638,54 @@ class RealFrictionAUTD:
         return False
 
 
+def valid_realsense_path(positions: list[np.ndarray]) -> np.ndarray | None:
+    if not positions:
+        return None
+
+    path = np.asarray(positions, dtype=np.float64)
+    if path.ndim != 2 or path.shape[0] < 2 or path.shape[1] < 3:
+        return None
+
+    path = path[np.isfinite(path).all(axis=1)]
+    path = path[path[:, 2] > 0.0]
+    if len(path) < 2:
+        return None
+    if np.linalg.norm(path[-1] - path[0]) < 1e-6:
+        return None
+    return path[:, :3]
+
+
+def friction_point_on_polyline(path: np.ndarray, theta: float, stroke_length_mm: float, jitter_mm: float) -> np.ndarray:
+    deltas = np.diff(path, axis=0)
+    segment_lengths = np.linalg.norm(deltas, axis=1)
+    valid = segment_lengths > 1e-6
+    if not np.any(valid):
+        return path[0].copy()
+
+    deltas = deltas[valid]
+    segment_lengths = segment_lengths[valid]
+    start_points = path[:-1][valid]
+    cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    total_length = float(cumulative[-1])
+
+    stroke = min(max(1.0, float(stroke_length_mm)), total_length)
+    center_s = 0.5 * total_length
+    s = np.clip(center_s - 0.5 * stroke * math.cos(theta), 0.0, total_length)
+    index = min(np.searchsorted(cumulative, s, side="right") - 1, len(segment_lengths) - 1)
+    local_s = s - cumulative[index]
+    ratio = local_s / segment_lengths[index]
+    point = start_points[index] + deltas[index] * ratio
+
+    tangent = deltas[index] / segment_lengths[index]
+    normal = np.array([-tangent[1], tangent[0], 0.0], dtype=np.float64)
+    normal_length = np.linalg.norm(normal)
+    if normal_length > 1e-6:
+        normal /= normal_length
+        jitter = jitter_mm * (0.65 * math.sin(3.0 * theta) + 0.35 * math.sin(7.0 * theta + 0.7))
+        point = point + normal * jitter
+    return point
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Read friction_motion.json, drive AUTD focus motion, and play audio in sync.",
@@ -505,6 +697,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-s", type=float, default=None, help="Override playback.start_s.")
     parser.add_argument("--duration-s", type=float, default=None, help="Override playback.duration_s.")
     parser.add_argument("--no-audio", action="store_true", help="Run haptics without synchronized audio.")
+    parser.add_argument("--realsense", dest="realsense", action="store_true", default=None, help="Force RealSense tracking on.")
+    parser.add_argument("--no-realsense", dest="realsense", action="store_false", help="Run without RealSense tracking.")
     parser.add_argument("--list-audio-devices", action="store_true", help="Print sounddevice output devices.")
     return parser.parse_args()
 
@@ -515,6 +709,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
     paths = config.get("paths", {})
     playback = config.get("playback", {})
     autd = config.get("autd", {})
+    realsense = config.get("realsense", {})
     audio = config.get("audio", {})
 
     motion_json_value = args.json or str(paths.get("motion_json", ""))
@@ -535,6 +730,9 @@ def load_settings(args: argparse.Namespace) -> Settings:
         raise SystemExit(f"Invalid playback.mode={mode!r}; use real or simulate.")
 
     sync_audio = bool(playback.get("sync_audio", True)) and not args.no_audio
+    realsense_enabled = bool(realsense.get("enabled", True)) if args.realsense is None else bool(args.realsense)
+    if mode == "simulate" and args.realsense is None:
+        realsense_enabled = False
     return Settings(
         motion_json=motion_json,
         audio_wav=audio_wav,
@@ -552,6 +750,8 @@ def load_settings(args: argparse.Namespace) -> Settings:
         right_center_y_mm=float(autd.get("right_center_y_mm", 100.0)),
         left_center_x_mm=float(autd.get("left_center_x_mm", 0.0)),
         left_center_y_mm=float(autd.get("left_center_y_mm", -100.0)),
+        realsense_enabled=realsense_enabled,
+        realsense_startup_timeout_s=max(0.0, float(realsense.get("startup_timeout_s", 0.0))),
         audio_device=normalize_audio_device(audio.get("device", None)),
         audio_backend=str(audio.get("backend", "auto")).strip().lower() or "auto",
         audio_volume=max(0.0, float(audio.get("volume", 1.0))),
@@ -727,6 +927,7 @@ def run_playback(
             f"start={settings.start_s:.3f}s",
             f"duration={run_duration:.3f}s",
             f"update_hz={settings.update_hz:.2f}",
+            f"realsense={'on' if settings.realsense_enabled else 'off'}",
         )
 
         try:

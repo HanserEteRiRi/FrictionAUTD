@@ -1,11 +1,7 @@
 import numpy as np
 from dataclasses import dataclass
 from enum import Enum, auto
-
-try:
-    from pyautd3.link.simulator import Simulator
-except ModuleNotFoundError:  # pyautd3 >= 38 moved the simulator to a separate package.
-    Simulator = None
+from pyautd3.link.simulator import Simulator
 
 
 class LinkType(Enum):

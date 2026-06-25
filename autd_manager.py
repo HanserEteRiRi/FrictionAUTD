@@ -15,28 +15,17 @@ from pyautd3 import (
     FocusOption,
     SineOption,
     SquareOption,
+    EmitIntensity,
 )
-try:
-    from pyautd3 import EmitIntensity
-except ImportError:  # EmitIntensity was renamed to Intensity in pyautd3 >= 35.
-    from pyautd3 import Intensity as EmitIntensity
 from pyautd3.gain import Focus, Null
 
 # from pyautd3_link_soem import SOEM, SOEMOption, Status
-try:
-    from pyautd3.link.twincat import TwinCAT, RemoteTwinCAT
-except ImportError:  # RemoteTwinCAT was removed in pyautd3 >= 38 and is unused here.
-    from pyautd3.link.twincat import TwinCAT
-
-    RemoteTwinCAT = TwinCAT
+from pyautd3.link.twincat import TwinCAT, RemoteTwinCAT
 from pyautd3.utils import Duration
 from pyautd3.modulation import Sine, Static, Square
 from pyautd3 import Group, Device
 from dataclasses import dataclass
-try:
-    from pyautd3.link.simulator import Simulator
-except ModuleNotFoundError:  # pyautd3 >= 38 moved the simulator to a separate package.
-    Simulator = None
+from pyautd3.link.simulator import Simulator
 import config
 import math
 
@@ -87,8 +76,6 @@ class AUTDManager:
             self.autd: Controller = Controller.open(geometry, TwinCAT())
             print(self.autd.center)
         elif link == config.LinkType.SIM:
-            if Simulator is None:
-                raise RuntimeError("Simulator link is not installed for this pyautd3 version.")
             self.autd: Controller = Controller[Simulator].open(
                 geometry,
                 Simulator("127.0.0.1:8080"),

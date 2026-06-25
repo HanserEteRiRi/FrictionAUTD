@@ -2,6 +2,9 @@
 cd FrictionAUTD
 python friction_play.py
 
+# Real mode starts the right/left RealSense trackers by default.
+# python friction_play.py --no-realsense
+
 # Simulate without AUTD hardware:
 # python friction_play.py --mode simulate
 
